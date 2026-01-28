@@ -61,6 +61,10 @@ examples = [
 verifiers = [
     "verifiers==0.1.9.post2"
 ]
+pwncollege = [
+    "asyncssh>=2.14.0",
+    "httpx",
+]
 
 [build-system]
 requires = ["hatchling"]

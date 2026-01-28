@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%%TITLE%%</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: #fafafa;
+            color: #333;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: white;
+            padding: 1.5rem 2rem;
+        }
+
+        .header h1 {
+            margin: 0 0 0.5rem 0;
+            font-size: 1.5rem;
+        }
+
+        /* Stats bar */
+        .stats {
+            display: flex;
+            gap: 3rem;
+            padding: 1rem 2rem;
+            background: #fff;
+            border-bottom: 1px solid #e0e0e0;
+            flex-wrap: wrap;
+        }
+
+        .stat {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #1a1a2e;
+        }
+
+        .stat-label {
+            font-size: 0.85rem;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat.solved .stat-value {
+            color: #2e7d32;
+        }
+
+        .stat.unsolved .stat-value {
+            color: #c62828;
+        }
+
+        /* Filters */
+        .filters {
+            padding: 1rem 2rem;
+            background: #fff;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            gap: 1.5rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .filter-group label {
+            font-size: 0.9rem;
+            color: #666;
+        }
+
+        .filter-group select {
+            padding: 0.5rem 1rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            background: white;
+        }
+
+        .filter-group input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+
+        .search-box {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 0.5rem 1rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        /* Challenges container */
+        .challenges {
+            padding: 1rem 2rem 2rem;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        /* Challenge cards */
+        .challenge {
+            background: #fff;
+            border-radius: 8px;
+            margin: 1rem 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            border-left: 5px solid #9e9e9e;
+            overflow: hidden;
+        }
+
+        .challenge.solved {
+            border-left-color: #4caf50;
+        }
+
+        .challenge.unsolved {
+            border-left-color: #f44336;
+        }
+
+        .challenge.hidden {
+            display: none;
+        }
+
+        .challenge > summary {
+            padding: 1rem 1.5rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            list-style: none;
+            user-select: none;
+        }
+
+        .challenge > summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .challenge > summary:hover {
+            background: #f5f5f5;
+        }
+
+        .challenge[open] > summary {
+            border-bottom: 1px solid #eee;
+        }
+
+        .status-icon {
+            font-size: 1.2rem;
+        }
+
+        .challenge-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+            flex: 1;
+        }
+
+        .challenge-meta {
+            display: flex;
+            gap: 1rem;
+            font-size: 0.85rem;
+            color: #666;
+        }
+
+        .meta-item {
+            background: #f0f0f0;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+        }
+
+        .expand-icon {
+            color: #999;
+            transition: transform 0.2s;
+        }
+
+        .challenge[open] .expand-icon {
+            transform: rotate(90deg);
+        }
+
+        /* Challenge content */
+        .challenge-content {
+            padding: 1rem 1.5rem;
+        }
+
+        .challenge-info {
+            display: flex;
+            gap: 2rem;
+            padding: 0.75rem 1rem;
+            background: #f9f9f9;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+            font-size: 0.9rem;
+            flex-wrap: wrap;
+        }
+
+        .challenge-info span {
+            color: #666;
+        }
+
+        .challenge-info strong {
+            color: #333;
+        }
+
+        /* Messages */
+        .messages {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .message {
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .message-header {
+            padding: 0.5rem 1rem;
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .message-content {
+            padding: 1rem;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+
+        /* System message */
+        .message.system {
+            background: #f5f5f5;
+            border: 1px solid #e0e0e0;
+        }
+
+        .message.system .message-header {
+            background: #e8e8e8;
+            color: #666;
+        }
+
+        .message.system .message-content {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.85rem;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .message.system.collapsed .message-content {
+            max-height: 60px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .message.system.collapsed .message-content::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 40px;
+            background: linear-gradient(transparent, #f5f5f5);
+        }
+
+        /* User message */
+        .message.user {
+            background: #e3f2fd;
+            border: 1px solid #bbdefb;
+        }
+
+        .message.user .message-header {
+            background: #bbdefb;
+            color: #1565c0;
+        }
+
+        /* Tool result message */
+        .message.tool {
+            background: #e8f5e9;
+            border: 1px solid #c8e6c9;
+        }
+
+        .message.tool .message-header {
+            background: #c8e6c9;
+            color: #2e7d32;
+        }
+
+        .message.tool .message-content {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.85rem;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .message.tool.collapsed .message-content {
+            max-height: 100px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .message.tool.collapsed .message-content::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 40px;
+            background: linear-gradient(transparent, #e8f5e9);
+        }
+
+        /* Assistant message */
+        .message.assistant {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+        }
+
+        .message.assistant .message-header {
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        /* Think block */
+        .think-block {
+            background: #fafafa;
+            border-left: 3px solid #9e9e9e;
+            padding: 0.75rem 1rem;
+            margin-bottom: 1rem;
+            font-style: italic;
+            color: #666;
+            font-size: 0.9rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .think-block.collapsed {
+            max-height: 60px;
+            overflow: hidden;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .think-block.collapsed::after {
+            content: 'Click to expand...';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 40px;
+            background: linear-gradient(transparent, #fafafa);
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            padding-bottom: 5px;
+            font-size: 0.8rem;
+            color: #999;
+        }
+
+        .think-header {
+            font-weight: 600;
+            color: #999;
+            font-style: normal;
+            margin-bottom: 0.5rem;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Tool call */
+        .tool-call {
+            background: #282c34;
+            border-radius: 6px;
+            overflow: hidden;
+            margin-top: 0.5rem;
+        }
+
+        .tool-call-header {
+            background: #21252b;
+            padding: 0.5rem 1rem;
+            color: #61afef;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.85rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .tool-call-body {
+            padding: 1rem;
+            color: #abb2bf;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.85rem;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+
+        /* JSON syntax highlighting */
+        .json-key { color: #e06c75; }
+        .json-string { color: #98c379; }
+        .json-number { color: #d19a66; }
+        .json-boolean { color: #56b6c2; }
+        .json-null { color: #c678dd; }
+
+        /* Regular text after tool call */
+        .assistant-text {
+            margin-top: 1rem;
+            line-height: 1.6;
+        }
+
+        /* Expand/collapse buttons */
+        .expand-btn {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            font-size: 0.8rem;
+            color: #666;
+            background: #f0f0f0;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 0.5rem;
+        }
+
+        .expand-btn:hover {
+            background: #e0e0e0;
+        }
+
+        /* Module stats */
+        .module-stats {
+            padding: 1rem 2rem;
+            background: #fff;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .module-stats-toggle {
+            cursor: pointer;
+            font-weight: 600;
+            color: #666;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .module-stats-content {
+            display: none;
+            margin-top: 1rem;
+        }
+
+        .module-stats.open .module-stats-content {
+            display: block;
+        }
+
+        .module-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 1rem;
+        }
+
+        .module-card {
+            background: #f9f9f9;
+            padding: 1rem;
+            border-radius: 6px;
+            border-left: 4px solid #9e9e9e;
+        }
+
+        .module-card.perfect {
+            border-left-color: #4caf50;
+            background: #f1f8e9;
+        }
+
+        .module-card.partial {
+            border-left-color: #ff9800;
+            background: #fff8e1;
+        }
+
+        .module-card.none {
+            border-left-color: #f44336;
+            background: #ffebee;
+        }
+
+        .module-name {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .module-progress {
+            font-size: 0.9rem;
+            color: #666;
+        }
+
+        /* Keyboard hint */
+        .keyboard-hint {
+            position: fixed;
+            bottom: 1rem;
+            right: 1rem;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 0.75rem 1rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            opacity: 0.7;
+        }
+
+        .keyboard-hint kbd {
+            background: rgba(255,255,255,0.2);
+            padding: 0.1rem 0.4rem;
+            border-radius: 3px;
+            margin: 0 0.2rem;
+        }
+
+        /* Focus state for keyboard navigation */
+        .challenge.focused {
+            outline: 3px solid #2196f3;
+            outline-offset: 2px;
+        }
+
+        @media (max-width: 768px) {
+            .stats {
+                gap: 1.5rem;
+            }
+
+            .stat-value {
+                font-size: 1.5rem;
+            }
+
+            .challenges {
+                padding: 0.5rem;
+            }
+
+            .challenge-meta {
+                flex-direction: column;
+                gap: 0.25rem;
+            }
+
+            .keyboard-hint {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>%%TITLE%%</h1>
+    </div>
+
+    <div class="stats">
+        <div class="stat solved">
+            <span class="stat-value">%%SOLVED%%</span>
+            <span class="stat-label">Solved</span>
+        </div>
+        <div class="stat unsolved">
+            <span class="stat-value">%%UNSOLVED%%</span>
+            <span class="stat-label">Unsolved</span>
+        </div>
+        <div class="stat">
+            <span class="stat-value">%%TOTAL%%</span>
+            <span class="stat-label">Total</span>
+        </div>
+        <div class="stat">
+            <span class="stat-value">%%ACCURACY%%%</span>
+            <span class="stat-label">Accuracy</span>
+        </div>
+    </div>
+
+    <div class="module-stats" id="module-stats">
+        <div class="module-stats-toggle" onclick="toggleModuleStats()">
+            <span class="expand-icon">&#9654;</span>
+            Module Breakdown
+        </div>
+        <div class="module-stats-content">
+            <div class="module-grid" id="module-grid"></div>
+        </div>
+    </div>
+
+    <div class="filters">
+        <div class="filter-group">
+            <label for="dojo-filter">Dojo:</label>
+            <select id="dojo-filter" onchange="applyFilters()">
+                <option value="">All Dojos</option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <label for="module-filter">Module:</label>
+            <select id="module-filter" onchange="applyFilters()">
+                <option value="">All Modules</option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <input type="checkbox" id="unsolved-only" onchange="applyFilters()">
+            <label for="unsolved-only">Show unsolved only</label>
+        </div>
+        <div class="search-box">
+            <input type="text" id="search" placeholder="Search challenges..." oninput="applyFilters()">
+        </div>
+    </div>
+
+    <div class="challenges" id="challenges">
+        %%CHALLENGES_HTML%%
+    </div>
+
+    <div class="keyboard-hint">
+        <kbd>j</kbd>/<kbd>k</kbd> navigate &nbsp;
+        <kbd>Enter</kbd> toggle &nbsp;
+        <kbd>u</kbd> unsolved filter
+    </div>
+
+    <script>
+        const statsData = %%STATS_JSON%%;
+        let currentFocusIndex = -1;
+
+        // Initialize filters
+        function initFilters() {
+            const challenges = document.querySelectorAll('.challenge');
+            const dojos = new Set();
+            const modules = new Set();
+
+            challenges.forEach(c => {
+                dojos.add(c.dataset.dojo);
+                modules.add(c.dataset.module);
+            });
+
+            const dojoSelect = document.getElementById('dojo-filter');
+            const moduleSelect = document.getElementById('module-filter');
+
+            [...dojos].sort().forEach(d => {
+                if (d) {
+                    const opt = document.createElement('option');
+                    opt.value = d;
+                    opt.textContent = d;
+                    dojoSelect.appendChild(opt);
+                }
+            });
+
+            [...modules].sort().forEach(m => {
+                if (m) {
+                    const opt = document.createElement('option');
+                    opt.value = m;
+                    opt.textContent = m;
+                    moduleSelect.appendChild(opt);
+                }
+            });
+        }
+
+        // Render module stats using safe DOM methods
+        function renderModuleStats() {
+            const grid = document.getElementById('module-grid');
+            const modules = Object.entries(statsData.by_module).sort((a, b) => a[0].localeCompare(b[0]));
+
+            // Clear existing content
+            while (grid.firstChild) {
+                grid.removeChild(grid.firstChild);
+            }
+
+            modules.forEach(([name, data]) => {
+                const pct = Math.round((data.solved / data.total) * 100);
+                let cls = 'none';
+                if (pct === 100) cls = 'perfect';
+                else if (pct > 0) cls = 'partial';
+
+                const card = document.createElement('div');
+                card.className = `module-card ${cls}`;
+
+                const nameEl = document.createElement('div');
+                nameEl.className = 'module-name';
+                nameEl.textContent = name;
+
+                const progressEl = document.createElement('div');
+                progressEl.className = 'module-progress';
+                progressEl.textContent = `${data.solved}/${data.total} (${pct}%)`;
+
+                card.appendChild(nameEl);
+                card.appendChild(progressEl);
+                grid.appendChild(card);
+            });
+        }
+
+        function toggleModuleStats() {
+            document.getElementById('module-stats').classList.toggle('open');
+        }
+
+        // Apply filters
+        function applyFilters() {
+            const dojo = document.getElementById('dojo-filter').value;
+            const module = document.getElementById('module-filter').value;
+            const unsolvedOnly = document.getElementById('unsolved-only').checked;
+            const search = document.getElementById('search').value.toLowerCase();
+
+            const challenges = document.querySelectorAll('.challenge');
+
+            challenges.forEach(c => {
+                let show = true;
+
+                if (dojo && c.dataset.dojo !== dojo) show = false;
+                if (module && c.dataset.module !== module) show = false;
+                if (unsolvedOnly && c.dataset.solved === 'true') show = false;
+                if (search && !c.textContent.toLowerCase().includes(search)) show = false;
+
+                c.classList.toggle('hidden', !show);
+            });
+
+            currentFocusIndex = -1;
+        }
+
+        // Keyboard navigation
+        function getVisibleChallenges() {
+            return [...document.querySelectorAll('.challenge:not(.hidden)')];
+        }
+
+        function focusChallenge(index) {
+            const challenges = getVisibleChallenges();
+            if (challenges.length === 0) return;
+
+            // Remove previous focus
+            document.querySelectorAll('.challenge.focused').forEach(c => c.classList.remove('focused'));
+
+            // Clamp index
+            index = Math.max(0, Math.min(index, challenges.length - 1));
+            currentFocusIndex = index;
+
+            // Add focus
+            const challenge = challenges[index];
+            challenge.classList.add('focused');
+            challenge.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        document.addEventListener('keydown', (e) => {
+            // Ignore if typing in input
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+
+            const challenges = getVisibleChallenges();
+
+            switch (e.key) {
+                case 'j':
+                    e.preventDefault();
+                    focusChallenge(currentFocusIndex + 1);
+                    break;
+                case 'k':
+                    e.preventDefault();
+                    focusChallenge(currentFocusIndex - 1);
+                    break;
+                case 'Enter':
+                    e.preventDefault();
+                    if (currentFocusIndex >= 0 && challenges[currentFocusIndex]) {
+                        challenges[currentFocusIndex].open = !challenges[currentFocusIndex].open;
+                    }
+                    break;
+                case 'u':
+                    e.preventDefault();
+                    const checkbox = document.getElementById('unsolved-only');
+                    checkbox.checked = !checkbox.checked;
+                    applyFilters();
+                    break;
+            }
+        });
+
+        // Toggle collapsed elements
+        function toggleCollapsed(el) {
+            el.classList.toggle('collapsed');
+        }
+
+        // Initialize
+        initFilters();
+        renderModuleStats();
+    </script>
+</body>
+</html>

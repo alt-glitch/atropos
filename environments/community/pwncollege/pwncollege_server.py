@@ -10,8 +10,8 @@ https://github.com/alt-glitch/dojo/blob/master/docs/deployment.md
 
 Read the README.md for more hosting information.
 
-The model is provided tools to interact with each challenge container, similar to terminal
-bench as well as submit flags, and optionally restart the container.
+The model is provided tools to interact with each challenge container via persistent SSH,
+similar to terminal bench as well as submit flags, and optionally restart the container.
 """
 
 from __future__ import annotations
@@ -21,9 +21,15 @@ import asyncio
 import json
 from typing import Any
 
-from prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
+from prompts import SUBMIT_FLAG_TOOL, SYSTEM_PROMPT_TEMPLATE, USER_PROMPT_TEMPLATE
 from sdk import DojoUser, PwnCollegeClient, PwnCollegeSyncClient, UserPool
-from tools import TOOLS
+from ssh_session import PersistentSSHSession
+from tool_utils import (
+    format_tool_result,
+    function_to_tool_schema,
+    parse_tool_calls,
+)
+from tools import AGENT_TOOLS, bash, edit_file, read_file, submit_flag, write_file
 
 from atroposlib.envs.eval import EvalBase
 from atroposlib.envs.server_handling.server_baseline import APIServerConfig
@@ -41,29 +47,51 @@ DOJO_DIFFICULTY = {
 }
 
 
+def _build_tools_block() -> str:
+    """Build the tools XML block for the system prompt."""
+    schemas = [function_to_tool_schema(func) for func in AGENT_TOOLS]
+    schemas.append(SUBMIT_FLAG_TOOL)
+    return "<tools>\n" + json.dumps(schemas, indent=2) + "\n</tools>"
+
+
 class PwnCollegeEval(EvalBase):
     """Evaluates models on pwn.college CTF challenges."""
 
     def __init__(
         self,
         base_url: str = "https://zephyr.tail119aa7.ts.net/",
+        ssh_host: str = "zephyr.tail119aa7.ts.net",
+        ssh_port: int = 2222,
         max_turns: int = 20,
         max_tokens: int = 4096,
         max_eval_items: int = -1,
         difficulty_filter: int = -1,
+        dojo_filter: str | None = None,
+        module_filter: str | None = None,
+        challenge_filter: str | None = None,
         num_users: int = 4,
         ssh_timeout: float = 30.0,
+        eval_dir: str | None = None,
         **kwargs,
     ):
         self.base_url = base_url
+        self.ssh_host = ssh_host
+        self.ssh_port = ssh_port
         self.max_turns = max_turns
         self.max_tokens = max_tokens
         self.max_eval_items = max_eval_items
         self.difficulty_filter = difficulty_filter
+        self.dojo_filter = dojo_filter
+        self.module_filter = module_filter
+        self.challenge_filter = challenge_filter
         self.num_users = num_users
         self.ssh_timeout = ssh_timeout
+        self.eval_dir = eval_dir
         self.pool: UserPool | None = None
         self.client: PwnCollegeClient | None = None
+
+        # Pre-build tools block for system prompt
+        self.tools_block = _build_tools_block()
 
         super().__init__(**kwargs)
 
@@ -83,6 +111,10 @@ class PwnCollegeEval(EvalBase):
                 dojo_description = dojo.get("description", "")
                 difficulty = DOJO_DIFFICULTY.get(dojo_id, -1)
 
+                # Apply dojo filter
+                if self.dojo_filter and dojo_id != self.dojo_filter:
+                    continue
+
                 print(f"  Processing dojo: {dojo_id} (difficulty={difficulty})")
 
                 try:
@@ -98,6 +130,10 @@ class PwnCollegeEval(EvalBase):
                     module_name = module.get("name", "")
                     module_description = module.get("description", "")
                     challenges = module.get("challenges", [])
+
+                    # Apply module filter
+                    if self.module_filter and module_id != self.module_filter:
+                        continue
 
                     # Build section header mapping from unified_items
                     unified_items = module.get("unified_items", [])
@@ -118,6 +154,13 @@ class PwnCollegeEval(EvalBase):
                         required = challenge.get("required", False)
                         section_header = challenge_to_section.get(challenge_id, "")
 
+                        # Apply challenge filter
+                        if (
+                            self.challenge_filter
+                            and challenge_id != self.challenge_filter
+                        ):
+                            continue
+
                         # Infer category from dojo/module names
                         combined = f"{dojo_name} {module_name}".lower()
                         category = "misc"
@@ -134,7 +177,12 @@ class PwnCollegeEval(EvalBase):
                                 category = cat
                                 break
 
-                        # Build initial messages for this challenge
+                        # Build system prompt with tools
+                        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+                            tools_block=self.tools_block
+                        )
+
+                        # Build user prompt for this challenge
                         user_prompt = USER_PROMPT_TEMPLATE.format(
                             module_name=module_name,
                             challenge_name=challenge_name,
@@ -142,7 +190,7 @@ class PwnCollegeEval(EvalBase):
                             or "No description provided.",
                         )
                         initial_messages = [
-                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt},
                         ]
 
@@ -175,130 +223,150 @@ class PwnCollegeEval(EvalBase):
 
         return rows
 
-    async def _ssh_command(self, user: DojoUser, command: str) -> str:
-        """Execute a command via SSH on the challenge container."""
-        # TODO: Implement SSH command execution
-        ...
-
     async def _execute_tool(
         self,
+        ssh_session: PersistentSSHSession,
         user: DojoUser,
         data_item: dict,
-        tool_name: str,
-        tool_args: dict,
+        tool_call: dict,
+        client: PwnCollegeClient,
     ) -> tuple[str, bool]:
-        """Execute a tool call and return (result, is_flag_correct)."""
-        if tool_name == "ssh_command":
-            command = tool_args.get("command", "")
-            result = await self._ssh_command(user, command)
-            return result, False
+        """Execute tool and return (result_string, is_solved)."""
+        name = tool_call.get("name", "")
+        args = tool_call.get("arguments", {})
 
-        elif tool_name == "submit_flag":
-            flag = tool_args.get("flag", "")
-            assert self.client is not None
-            try:
-                # Login as user to submit flag
-                await self.client.login(user.username, user.password)
-                response = await self.client.submit_flag(
-                    dojo=data_item["dojo_id"],
-                    module=data_item["module_id"],
-                    challenge=data_item["challenge_id"],
-                    flag=flag,
-                )
-                await self.client.logout()
+        if name == "bash":
+            command = args.get("command", "")
+            result = await bash(ssh_session, command)
+            return format_tool_result("bash", result), False
 
-                is_correct = response.get("success", False)
-                if is_correct:
-                    return "Flag accepted! Challenge solved.", True
-                else:
-                    message = response.get("message", "Flag incorrect")
-                    return f"Flag rejected: {message}", False
-            except Exception as e:
-                return f"Error submitting flag: {e}", False
+        elif name == "read_file":
+            file_path = args.get("file_path", "")
+            offset = int(args.get("offset", 1))
+            limit = args.get("limit")
+            if limit is not None:
+                limit = int(limit)
+            result = await read_file(ssh_session, file_path, offset, limit)
+            return format_tool_result("read_file", result), False
+
+        elif name == "write_file":
+            file_path = args.get("file_path", "")
+            content = args.get("content", "")
+            result = await write_file(ssh_session, file_path, content)
+            return format_tool_result("write_file", result), False
+
+        elif name == "edit_file":
+            file_path = args.get("file_path", "")
+            old_string = args.get("old_string", "")
+            new_string = args.get("new_string", "")
+            result = await edit_file(ssh_session, file_path, old_string, new_string)
+            return format_tool_result("edit_file", result), False
+
+        elif name == "submit_flag":
+            flag = args.get("flag", "")
+
+            # Login as user to submit flag
+            await client.login(user.username, user.password)
+            result, is_correct = await submit_flag(
+                client,
+                data_item["dojo_id"],
+                data_item["module_id"],
+                data_item["challenge_id"],
+                flag,
+            )
+            await client.logout()
+
+            return format_tool_result("submit_flag", result), is_correct
 
         else:
-            return f"Unknown tool: {tool_name}", False
+            return format_tool_result("error", f"Unknown tool: {name}"), False
 
     async def _run_challenge_loop(
         self,
         server: ServerManager,
         user: DojoUser,
         data_item: dict,
+        client: PwnCollegeClient,
     ) -> tuple[bool, list[dict]]:
-        """Run multi-turn challenge loop with tool use. Returns (solved, messages)."""
-        # Copy initial messages to avoid mutating the original
+        """Multi-turn loop with persistent SSH and tool calling."""
         messages = list(data_item["initial_messages"])
+        ssh_session = PersistentSSHSession(
+            self.ssh_host, self.ssh_port, self.ssh_timeout
+        )
 
-        solved = False
-        turn = 0
+        try:
+            await ssh_session.connect(user)
+        except Exception as e:
+            # SSH connection failed - this usually means the dojo's SSH routing
+            # isn't configured properly. Return early with error info.
+            error_msg = f"SSH connection failed: {e}"
+            messages.append({"role": "system", "content": error_msg})
+            return False, messages
 
-        while turn < self.max_turns and not solved:
-            turn += 1
-
-            # Get model response
-            response = await server.chat_completion(
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-                max_tokens=self.max_tokens,
-                temperature=0.7,
-            )
-
-            choice = response.choices[0]
-            assistant_message = choice.message
-
-            # Build assistant message dict
-            assistant_dict: dict[str, Any] = {"role": "assistant"}
-            if assistant_message.content:
-                assistant_dict["content"] = assistant_message.content
-            if assistant_message.tool_calls:
-                assistant_dict["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in assistant_message.tool_calls
-                ]
-
-            messages.append(assistant_dict)
-
-            # Check for tool calls
-            if not assistant_message.tool_calls:
-                # No tool calls - check if model is done
-                if choice.finish_reason == "stop":
-                    break
-                continue
-
-            # Execute each tool call
-            for tool_call in assistant_message.tool_calls:
-                tool_name = tool_call.function.name
-                try:
-                    tool_args = json.loads(tool_call.function.arguments)
-                except json.JSONDecodeError:
-                    tool_args = {}
-
-                result, is_correct = await self._execute_tool(
-                    user, data_item, tool_name, tool_args
+        try:
+            for _ in range(self.max_turns):
+                # 1. Get model response
+                response = await server.chat_completion(
+                    messages=messages,
+                    max_tokens=self.max_tokens,
+                    temperature=0.7,
                 )
+                assistant_content = response.choices[0].message.content or ""
+                messages.append({"role": "assistant", "content": assistant_content})
 
-                # Add tool response
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": result,
-                    }
-                )
+                # 2. Parse tool calls
+                tool_calls = parse_tool_calls(assistant_content)
+                if tool_calls is None:
+                    # No valid tool calls
+                    # Check if model found a flag but didn't use submit_flag
+                    if "pwn.college{" in assistant_content:
+                        # Try to extract and submit the flag
+                        import re
 
-                if is_correct:
-                    solved = True
-                    break
+                        flag_match = re.search(
+                            r"pwn\.college\{[^}]+\}", assistant_content
+                        )
+                        if flag_match:
+                            flag = flag_match.group(0)
+                            await client.login(user.username, user.password)
+                            result, is_correct = await submit_flag(
+                                client,
+                                data_item["dojo_id"],
+                                data_item["module_id"],
+                                data_item["challenge_id"],
+                                flag,
+                            )
+                            await client.logout()
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": f"Auto-submitted flag: {result}",
+                                }
+                            )
+                            if is_correct:
+                                return True, messages
+                    continue
 
-        return solved, messages
+                # 3. Execute each tool call (usually just one per turn)
+                tool_results = []
+                for tc in tool_calls:
+                    result, solved = await self._execute_tool(
+                        ssh_session, user, data_item, tc, client
+                    )
+                    tool_results.append(result)
+                    if solved:
+                        messages.append(
+                            {"role": "user", "content": "\n\n".join(tool_results)}
+                        )
+                        return True, messages
+
+                # 4. Add tool results to messages
+                messages.append({"role": "user", "content": "\n\n".join(tool_results)})
+
+        finally:
+            await ssh_session.close()
+
+        return False, messages
 
     async def run_item(
         self, server: ServerManager, data_item: dict
@@ -308,29 +376,73 @@ class PwnCollegeEval(EvalBase):
 
         # These are guaranteed non-None when called from __call__
         assert self.pool is not None
-        assert self.client is not None
 
-        async with self.pool.acquire(challenge_id) as user:
-            # Login and start challenge
-            await self.client.login(user.username, user.password)
-            await self.client.start_challenge(
-                dojo=data_item["dojo_id"],
-                module=data_item["module_id"],
-                challenge=data_item["challenge_id"],
-                practice=False,
-            )
+        # Create a separate client for this challenge to avoid session conflicts
+        client = PwnCollegeClient(self.base_url)
 
-            # Set SSH key for this session
-            await self.client.set_ssh_key(user.ssh_pubkey)
-            await self.client.logout()
+        solved = False
+        messages = list(data_item["initial_messages"])
 
-            # Run challenge loop
-            solved, messages = await self._run_challenge_loop(server, user, data_item)
+        try:
+            async with self.pool.acquire(challenge_id) as user:
+                # Login and start challenge
+                await client.login(user.username, user.password)
+                await client.start_challenge(
+                    dojo=data_item["dojo_id"],
+                    module=data_item["module_id"],
+                    challenge=data_item["challenge_id"],
+                    practice=False,
+                )
 
-            # Stop challenge container
-            await self.client.login(user.username, user.password)
-            await self.client.stop_challenge()
-            await self.client.logout()
+                # Set SSH key for this session (may already be set)
+                try:
+                    await client.set_ssh_key(user.ssh_pubkey)
+                except Exception:
+                    pass  # SSH key might already be set
+                await client.logout()
+
+                # Wait for container to be ready
+                # Note: SSH routing to containers depends on proper dojo configuration.
+                # If SSH fails with "No active challenge session", the server's
+                # /opt/sshd/auth.py may need configuration to route SSH keys to containers.
+                await asyncio.sleep(5)
+
+                # Run challenge loop (pass client for submit_flag)
+                try:
+                    solved, messages = await self._run_challenge_loop(
+                        server, user, data_item, client
+                    )
+                except (BrokenPipeError, ConnectionError, OSError) as e:
+                    messages.append({"role": "system", "content": f"SSH error: {e}"})
+                    solved = False
+                except Exception as e:
+                    # Catch context length and other API errors
+                    error_msg = str(e)
+                    if (
+                        "context_length_exceeded" in error_msg
+                        or "too many tokens" in error_msg.lower()
+                    ):
+                        messages.append(
+                            {
+                                "role": "system",
+                                "content": "Context length exceeded - challenge aborted",
+                            }
+                        )
+                    else:
+                        messages.append(
+                            {"role": "system", "content": f"Error: {error_msg[:200]}"}
+                        )
+                    solved = False
+
+                # Stop challenge container
+                try:
+                    await client.login(user.username, user.password)
+                    await client.stop_challenge()
+                    await client.logout()
+                except Exception:
+                    pass  # Best effort cleanup
+        finally:
+            await client.close()
 
         # Build metrics
         metrics = {
@@ -353,9 +465,35 @@ class PwnCollegeEval(EvalBase):
         return metrics, sample
 
     async def __call__(self, server_manager: ServerManager):
-        """Initialize pool, run eval, cleanup."""
+        """Initialize pool, run eval with limited concurrency, cleanup."""
+        from tqdm.asyncio import tqdm_asyncio
+
         self.client = PwnCollegeClient(self.base_url)
         self.pool = UserPool(num_users=self.num_users)
+
+        # Semaphore limits concurrent challenges to num_users
+        semaphore = asyncio.Semaphore(self.num_users)
+
+        async def run_with_semaphore(item):
+            async with semaphore:
+                try:
+                    return await self.run_item(server_manager, item)
+                except Exception as e:
+                    # Return failed result instead of raising
+                    dojo = item.get("dojo_id", "?")
+                    module = item.get("module_id", "?")
+                    chall = item.get("challenge_id", "?")
+                    challenge_id = f"{dojo}/{module}/{chall}"
+                    print(f"Challenge {challenge_id} failed: {e}")
+                    return (
+                        {"accuracy": 0.0},
+                        {
+                            "challenge_id": challenge_id,
+                            "solved": False,
+                            "error": str(e)[:200],
+                            "messages": [],
+                        },
+                    )
 
         try:
             print(f"Initializing user pool with {self.num_users} users...")
@@ -363,7 +501,56 @@ class PwnCollegeEval(EvalBase):
             print(
                 f"User pool initialized. Running evaluation on {len(self.data)} challenges..."
             )
-            return await super().__call__(server_manager)
+
+            # Run with limited concurrency (exceptions caught in run_with_semaphore)
+            task_coros = [run_with_semaphore(item) for item in self.data]
+            task_results = await tqdm_asyncio.gather(*task_coros)
+
+            # Aggregate results
+            all_metrics = {}
+            all_samples = []
+            for metrics, sample in task_results:
+                for k, v in metrics.items():
+                    if k not in all_metrics:
+                        all_metrics[k] = []
+                    all_metrics[k].append(v)
+                all_samples.append(sample)
+
+            # Average metrics
+            avg_metrics = {k: sum(v) / len(v) for k, v in all_metrics.items()}
+
+            # Save samples if eval_dir specified
+            if self.eval_dir:
+                import json
+                from datetime import datetime
+                from pathlib import Path
+
+                # Create timestamped subdirectory to avoid overwriting
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                eval_path = Path(self.eval_dir) / timestamp
+                eval_path.mkdir(parents=True, exist_ok=True)
+
+                samples_file = eval_path / "samples.jsonl"
+                with open(samples_file, "w") as f:
+                    for sample in all_samples:
+                        f.write(json.dumps(sample) + "\n")
+
+                with open(eval_path / "metrics.json", "w") as f:
+                    json.dump(avg_metrics, f, indent=2)
+
+                # Generate HTML viewer
+                try:
+                    from rollout_viewer import generate_html
+
+                    generate_html(str(samples_file))
+                    print(f"Generated HTML viewer: {eval_path / 'samples.html'}")
+                except ImportError:
+                    pass  # Viewer not available
+
+                print(f"Saved {len(all_samples)} samples to {eval_path}")
+
+            return avg_metrics
+
         finally:
             await self.pool.shutdown()
             await self.client.close()
@@ -371,25 +558,44 @@ class PwnCollegeEval(EvalBase):
 
 async def main():
     """Run the PwnCollege evaluation."""
+    import os
 
     parser = argparse.ArgumentParser(description="PwnCollege CTF Evaluation")
     parser.add_argument(
         "--server-url",
         type=str,
-        default="http://localhost:8000/v1",
+        default="https://api.openai.com/v1",
         help="OpenAI-compatible server URL",
     )
     parser.add_argument(
         "--model-name",
         type=str,
-        default=None,
+        default="gpt-4o",
         help="Model name to use",
+    )
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API key (defaults to OPENAI_API_KEY env var)",
     )
     parser.add_argument(
         "--base-url",
         type=str,
         default="https://zephyr.tail119aa7.ts.net/",
         help="Dojo API base URL",
+    )
+    parser.add_argument(
+        "--ssh-host",
+        type=str,
+        default="zephyr.tail119aa7.ts.net",
+        help="SSH host for challenge containers",
+    )
+    parser.add_argument(
+        "--ssh-port",
+        type=int,
+        default=2222,
+        help="SSH port for challenge containers",
     )
     parser.add_argument(
         "--max-eval-items",
@@ -402,6 +608,24 @@ async def main():
         type=int,
         default=-1,
         help="Filter by difficulty level (-1 for all)",
+    )
+    parser.add_argument(
+        "--dojo",
+        type=str,
+        default=None,
+        help="Filter by dojo ID",
+    )
+    parser.add_argument(
+        "--module",
+        type=str,
+        default=None,
+        help="Filter by module ID",
+    )
+    parser.add_argument(
+        "--challenge",
+        type=str,
+        default=None,
+        help="Filter by challenge ID",
     )
     parser.add_argument(
         "--num-users",
@@ -425,7 +649,7 @@ async def main():
         "--eval-dir",
         type=str,
         default=None,
-        help="Directory to save evaluation results",
+        help="Directory to save evaluation results (creates timestamped subdirectory)",
     )
 
     args = parser.parse_args()
@@ -433,19 +657,30 @@ async def main():
     # Create evaluation environment
     eval_env = PwnCollegeEval(
         base_url=args.base_url,
+        ssh_host=args.ssh_host,
+        ssh_port=args.ssh_port,
         max_turns=args.max_turns,
         max_tokens=args.max_tokens,
         max_eval_items=args.max_eval_items,
         difficulty_filter=args.difficulty,
+        dojo_filter=args.dojo,
+        module_filter=args.module,
+        challenge_filter=args.challenge,
         num_users=args.num_users,
         eval_dir=args.eval_dir,
     )
+
+    # Get API key from args or environment
+    api_key = args.api_key or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("Error: API key required. Set OPENAI_API_KEY or use --api-key")
+        return
 
     # Create server manager
     server_manager = ServerManager(
         configs=[
             APIServerConfig(
-                api_key="x",
+                api_key=api_key,
                 base_url=args.server_url,
                 model_name=args.model_name,
                 health_check=False,

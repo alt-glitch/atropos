@@ -105,7 +105,10 @@ class PwnCollegeClient:
 
     async def logout(self) -> dict[str, Any]:
         """Logout and clear session."""
-        return await self._post("/auth/logout")
+        result = await self._post("/auth/logout")
+        # Clear CSRF cache since it's invalidated after logout
+        self._csrf_nonce = None
+        return result
 
     # ── SSH Key ───────────────────────────────────────────────────────────────
 
@@ -151,9 +154,13 @@ class PwnCollegeClient:
         self, dojo: str, module: str, challenge: str, flag: str
     ) -> dict[str, Any]:
         """Submit a flag for a challenge."""
+        csrf = await self._ensure_csrf()
+        headers = {"CSRF-Token": csrf}
+        data = {"submission": flag, "nonce": csrf}
         resp = await self.client.post(
             self._api_url(f"/dojos/{dojo}/{module}/{challenge}/solve"),
-            json={"submission": flag},
+            json=data,
+            headers=headers,
         )
         resp.raise_for_status()
         return resp.json()
@@ -418,15 +425,23 @@ class UserPool:
                 try:
                     await client.register(username, user.email, user.password)
                 except httpx.HTTPStatusError as e:
-                    if e.response.status_code != 409:  # 409 = already exists
+                    # 409 = already exists, 400 = might also mean already exists
+                    if e.response.status_code not in (400, 409):
                         raise
+                    # User already exists - continue to login
 
                 # Login to get user_id and set SSH key
                 result = await client.login(username, user.password)
                 user.user_id = result.get("data", {}).get("id")
 
-                # Set SSH key
-                await client.set_ssh_key(user.ssh_pubkey)
+                # Set SSH key (may already be set)
+                try:
+                    await client.set_ssh_key(user.ssh_pubkey)
+                except httpx.HTTPStatusError as e:
+                    # 400 might mean key already set or in use
+                    if e.response.status_code != 400:
+                        raise
+
                 await client.logout()
 
                 user.state = UserState.AVAILABLE
