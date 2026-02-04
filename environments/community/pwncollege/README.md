@@ -1,102 +1,259 @@
-# pwncollege SDK
+## About This Environment
 
-Minimal SDK for programmatic interaction with a pwncollege dojo server.
+This environment evaluates and trains models on pwn.college's CTF (Capture The Flag) cybersecurity challenges. Similar to [SWE-bench](https://www.swebench.com/) for coding, pwn.college provides a standardized benchmark for security/hacking capabilities.
 
-## Installation
+Models interact with challenge containers via persistent SSH sessions, using tools to execute commands, read/write files, and submit flags. Each challenge has a verifiable flag that confirms successful completion.
+
+
+## Directory Structure
+
+```
+pwncollege/
+├── eval/
+│   └── pwncollege_eval.py    # Evaluation environment
+├── train/
+│   └── pwncollege_train.py   # Training environment (SFT/RL data generation)
+├── sdk.py                    # Dojo API client
+├── ssh_session.py            # Persistent SSH session manager
+├── tools.py                  # Agent tools (bash, read_file, etc.)
+├── tool_utils.py             # Tool parsing utilities
+├── prompts.py                # System/user prompt templates
+└── keys/                     # Auto-generated SSH keys for user pool
+```
+
+## Prerequisites
+
+### 1. Dojo Server
+
+You need a pwn.college dojo server. Options:
+
+- Use the public [pwn.college](https://pwn.college) (limited API access)
+- Self-host: https://github.com/pwncollege/dojo
+
+### 2. Environment Variables
 
 ```bash
-pip install httpx
+export OPENAI_API_KEY="sk-..."  # For OpenAI models
+# Or configure local server via CLI flags
 ```
 
-## Usage
+### 3. Dependencies
 
-### Sync Client
+```bash
+pip install httpx asyncssh
+```
+
+## Evaluation
+
+Evaluate model performance on CTF challenges.
+
+```bash
+cd environments/community/pwncollege/eval
+
+# Run on a specific dojo/module
+uv run python pwncollege_eval.py \
+    --dojo linux-luminarium \
+    --module hello \
+    --num-users 4 \
+    --max-turns 20 \
+    --eval-dir ./eval_results
+
+# With custom model
+uv run python pwncollege_eval.py \
+    --server-url https://api.openai.com/v1 \
+    --model-name gpt-4o \
+    --api-key "sk-..." \
+    --dojo linux-luminarium \
+    --max-eval-items 10
+
+# Filter by difficulty (0=easy, 4=hard)
+uv run python pwncollege_eval.py \
+    --difficulty 0 \
+    --max-eval-items 20
+```
+
+### Eval CLI Options
+
+| Flag               | Default                             | Description                       |
+| ------------------ | ----------------------------------- | --------------------------------- |
+| `--server-url`     | `https://api.openai.com/v1`         | OpenAI-compatible API URL         |
+| `--model-name`     | `gpt-4o`                            | Model to evaluate                 |
+| `--api-key`        | `$OPENAI_API_KEY`                   | API key                           |
+| `--base-url`       | `https://zephyr.tail119aa7.ts.net/` | Dojo server URL                   |
+| `--ssh-host`       | `zephyr.tail119aa7.ts.net`          | SSH host for containers           |
+| `--ssh-port`       | `2222`                              | SSH port                          |
+| `--dojo`           | None                                | Filter by dojo ID                 |
+| `--module`         | None                                | Filter by module ID               |
+| `--challenge`      | None                                | Filter by challenge ID            |
+| `--difficulty`     | `-1`                                | Filter by difficulty (-1 = all)   |
+| `--max-eval-items` | `-1`                                | Max challenges to eval (-1 = all) |
+| `--num-users`      | `4`                                 | Parallel SSH containers           |
+| `--max-turns`      | `20`                                | Max turns per challenge           |
+| `--max-tokens`     | `4096`                              | Max tokens per response           |
+| `--eval-dir`       | None                                | Save results to directory         |
+
+### Output
+
+Results are saved to `--eval-dir` with:
+
+- `samples.jsonl` - Per-challenge results with full message history
+- `metrics.json` - Aggregate metrics (accuracy, etc.)
+- `samples.html` - Interactive viewer
+
+## Training (SFT Data Generation)
+
+Generate SFT training data from model rollouts.
+
+```bash
+cd environments/community/pwncollege/train
+
+# Generate SFT data with GPT-4o
+uv run python -m environments.community.pwncollege.train.pwncollege_train process \
+    --env.data_path_to_save_groups sft_data.jsonl \
+    --env.total_steps 100 \
+    --env.group_size 1 \
+    --env.dojo_filter linux-luminarium \
+    --env.module_filter hello \
+    --env.num_users 4 \
+    --env.use_wandb false \
+    --openai.model_name gpt-4o \
+    --openai.base_url https://api.openai.com/v1 \
+    --openai.api_key "sk-..."
+
+# With local vLLM/SGLang server
+uv run python -m environments.community.pwncollege.train.pwncollege_train process \
+    --env.data_path_to_save_groups sft_data.jsonl \
+    --env.total_steps 50 \
+    --env.dojo_filter linux-luminarium \
+    --openai.base_url http://localhost:9001/v1 \
+    --openai.model_name Qwen/Qwen2.5-7B-Instruct
+```
+
+### Train CLI Options
+
+| Flag                             | Default | Description                        |
+| -------------------------------- | ------- | ---------------------------------- |
+| `--env.data_path_to_save_groups` | None    | Output JSONL path                  |
+| `--env.total_steps`              | `1000`  | Number of challenges to run        |
+| `--env.group_size`               | `1`     | Rollouts per challenge (keep at 1) |
+| `--env.dojo_filter`              | None    | Filter by dojo ID                  |
+| `--env.module_filter`            | None    | Filter by module ID                |
+| `--env.challenge_filter`         | None    | Filter by challenge ID             |
+| `--env.difficulty_filter`        | `-1`    | Filter by difficulty               |
+| `--env.num_users`                | `4`     | Parallel SSH containers            |
+| `--env.max_turns`                | `20`    | Max turns per challenge            |
+| `--env.use_wandb`                | `true`  | Enable W&B logging                 |
+| `--openai.model_name`            | Model   | Model name                         |
+| `--openai.base_url`              | URL     | Server URL                         |
+| `--openai.api_key`               | Key     | API key                            |
+
+### Output Format
+
+The JSONL output contains `ScoredDataGroup` entries:
+
+```json
+{
+  "tokens": [[...]],
+  "masks": [[...]],
+  "scores": [1.0],
+  "messages": [[{"role": "system", ...}, {"role": "user", ...}, ...]],
+  "inference_logprobs": [[...]],
+  "group_overrides": {
+    "challenge_id": "linux-luminarium/hello/hello",
+    "challenge_name": "Intro to Commands",
+    "solved": true
+  }
+}
+```
+
+- `tokens` - Tokenized conversation
+- `masks` - `-100` for prompts/tools, token IDs for assistant responses (SFT training)
+- `scores` - `1.0` if solved, `0.0` otherwise
+- `messages` - Full conversation history
+
+## Agent Tools
+
+The model has access to these tools via XML tool calls:
+
+| Tool          | Description                                         |
+| ------------- | --------------------------------------------------- |
+| `bash`        | Execute shell command (state persists across calls) |
+| `read_file`   | Read file with line numbers                         |
+| `write_file`  | Create/overwrite file                               |
+| `edit_file`   | Replace string in file                              |
+| `submit_flag` | Submit flag for verification                        |
+
+### Tool Call Format
+
+```xml
+<tool_call>
+{"name": "bash", "arguments": {"command": "ls -la /challenge"}}
+</tool_call>
+```
+
+## Difficulty Tiers
+
+| Dojo                     | Difficulty |
+| ------------------------ | ---------- |
+| `linux-luminarium`       | 0 (Easy)   |
+| `computing-101`          | 0          |
+| `playing-with-programs`  | 0          |
+| `intro-to-cybersecurity` | 1          |
+| `program-security`       | 2          |
+| `system-security`        | 3          |
+| `software-exploitation`  | 4 (Hard)   |
+
+## SDK Reference
+
+For programmatic dojo interaction:
 
 ```python
-from sdk import PwnCollegeSyncClient
+from environments.community.pwncollege import PwnCollegeClient, UserPool
 
-with PwnCollegeSyncClient("http://localhost:8000") as client:
-    # Register a new user
-    client.register("hacker", "hacker@example.com", "password123")
-
-    # Or login to existing account
-    client.login("hacker", "password123")
-
-    # Set SSH key for container access
-    with open("~/.ssh/id_ed25519.pub") as f:
-        client.set_ssh_key(f.read())
-
-    # List available dojos
-    dojos = client.list_dojos()
-    print(dojos["dojos"])
-
-    # Start a challenge container
-    client.start_challenge(
-        dojo="welcome",
-        module="intro",
-        challenge="level1",
-        practice=False,  # True for practice mode (privileged)
-    )
-
-    # SSH into the container and solve...
-    # ssh -p 2222 hacker@localhost
-
-    # Submit flag
-    result = client.submit_flag(
-        dojo="welcome",
-        module="intro",
-        challenge="level1",
-        flag="pwn.college{...}",
-    )
-
-    # Stop container when done
-    client.stop_challenge()
+async with PwnCollegeClient("https://dojo.example.com") as client:
+    await client.login("user", "password")
+    await client.start_challenge("linux-luminarium", "hello", "hello")
+    # ... SSH and solve ...
+    result = await client.submit_flag("linux-luminarium", "hello", "hello", "pwn.college{...}")
+    await client.stop_challenge()
 ```
 
-### Async Client
+See `sdk.py` for full API.
 
-```python
-import asyncio
-from sdk import PwnCollegeClient
+## Architecture
 
-async def main():
-    async with PwnCollegeClient("http://localhost:8000") as client:
-        await client.login("hacker", "password123")
-
-        # List modules in a dojo
-        modules = await client.list_modules("welcome")
-        for module in modules["modules"]:
-            print(f"{module['id']}: {module['name']}")
-
-        # Start challenge
-        await client.start_challenge("welcome", "intro", "level1")
-
-        # Get challenge description
-        desc = await client.get_challenge_description("welcome", "intro", "level1")
-        print(desc["description"])
-
-asyncio.run(main())
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Atropos Trainer                        │
+│                    (GRPO, PPO, etc.)                        │
+└─────────────────────────────────────────────────────────────┘
+                              ▲
+                              │ trajectories (tokens, masks, scores)
+                              │
+┌─────────────────────────────────────────────────────────────┐
+│                   PwnCollegeTrain (BaseEnv)                 │
+│  - Manages user pool (parallel SSH sessions)                │
+│  - Runs multi-turn challenge loops                          │
+│  - Tokenizes conversations for SFT                          │
+└─────────────────────────────────────────────────────────────┘
+         │                              │
+         │ chat_completion              │ tool execution
+         ▼                              ▼
+┌─────────────────┐           ┌─────────────────────┐
+│   LLM Server    │           │   Dojo Server       │
+│ (OpenAI/vLLM)   │           │ (pwn.college API)   │
+└─────────────────┘           └─────────────────────┘
+                                        │
+                                        │ SSH
+                                        ▼
+                              ┌─────────────────────┐
+                              │ Challenge Container │
+                              │  (bash, files, etc) │
+                              └─────────────────────┘
 ```
 
-## API Reference
+## Contributing
 
-| Method | Description |
-|--------|-------------|
-| `register(username, email, password)` | Create new user account |
-| `login(username, password)` | Login and establish session |
-| `logout()` | Clear session |
-| `set_ssh_key(public_key)` | Set SSH public key |
-| `delete_ssh_key(public_key)` | Remove SSH public key |
-| `start_challenge(dojo, module, challenge, practice=False)` | Start/reset challenge container |
-| `get_current_challenge()` | Get active challenge info |
-| `stop_challenge()` | Stop challenge container |
-| `submit_flag(dojo, module, challenge, flag)` | Submit flag for challenge |
-| `list_dojos()` | List accessible dojos |
-| `list_modules(dojo)` | List modules in a dojo |
-| `get_challenge_description(dojo, module, challenge)` | Get challenge description |
+This is a community environment. Contributions welcome!
 
-## Notes
-
-- Session cookies are automatically managed by httpx
-- `start_challenge` removes any existing container before starting a new one
-- Practice mode (`practice=True`) enables privileged container for debugging
+See the [community environments guide](../README.md) for contribution guidelines.
