@@ -295,3 +295,70 @@ def validate_response(text: str, expect_tool_calls: bool = True) -> bool:
 def format_tool_result(tool_name: str, result: str) -> str:
     """Format tool result for inclusion in conversation."""
     return f"<tool_response>\n[{tool_name}]\n{result}\n</tool_response>"
+
+
+async def execute_tool(
+    ssh_session,
+    client,
+    data_item: dict,
+    tool_call: dict,
+) -> tuple[str, bool]:
+    """Execute a tool call and return (formatted_result, is_solved).
+
+    This shared function is used by both eval and train environments.
+
+    Args:
+        ssh_session: PersistentSSHSession for executing shell commands.
+        client: PwnCollegeClient for flag submission.
+        data_item: Challenge data containing dojo_id, module_id, challenge_id.
+        tool_call: Parsed tool call dict with 'name' and 'arguments'.
+
+    Returns:
+        Tuple of (formatted result string, whether challenge was solved).
+    """
+    # Import here to avoid circular imports
+    from .tools import bash, edit_file, read_file, submit_flag, write_file
+
+    name = tool_call.get("name", "")
+    args = tool_call.get("arguments", {})
+
+    if name == "bash":
+        command = args.get("command", "")
+        result = await bash(ssh_session, command)
+        return format_tool_result("bash", result), False
+
+    elif name == "read_file":
+        file_path = args.get("file_path", "")
+        offset = int(args.get("offset", 1))
+        limit = args.get("limit")
+        if limit is not None:
+            limit = int(limit)
+        result = await read_file(ssh_session, file_path, offset, limit)
+        return format_tool_result("read_file", result), False
+
+    elif name == "write_file":
+        file_path = args.get("file_path", "")
+        content = args.get("content", "")
+        result = await write_file(ssh_session, file_path, content)
+        return format_tool_result("write_file", result), False
+
+    elif name == "edit_file":
+        file_path = args.get("file_path", "")
+        old_string = args.get("old_string", "")
+        new_string = args.get("new_string", "")
+        result = await edit_file(ssh_session, file_path, old_string, new_string)
+        return format_tool_result("edit_file", result), False
+
+    elif name == "submit_flag":
+        flag = args.get("flag", "")
+        result, is_correct = await submit_flag(
+            client,
+            data_item["dojo_id"],
+            data_item["module_id"],
+            data_item["challenge_id"],
+            flag,
+        )
+        return format_tool_result("submit_flag", result), is_correct
+
+    else:
+        return format_tool_result("error", f"Unknown tool: {name}"), False

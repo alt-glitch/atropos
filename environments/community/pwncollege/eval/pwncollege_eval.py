@@ -21,19 +21,19 @@ import asyncio
 import json
 from typing import Any
 
-from prompts import SUBMIT_FLAG_TOOL, SYSTEM_PROMPT_TEMPLATE, USER_PROMPT_TEMPLATE
-from sdk import DojoUser, PwnCollegeClient, PwnCollegeSyncClient, UserPool
-from ssh_session import PersistentSSHSession
-from tool_utils import (
+from atroposlib.envs.eval import EvalBase
+from atroposlib.envs.server_handling.server_baseline import APIServerConfig
+from atroposlib.envs.server_handling.server_manager import ServerManager
+
+from ..prompts import SUBMIT_FLAG_TOOL, SYSTEM_PROMPT_TEMPLATE, USER_PROMPT_TEMPLATE
+from ..sdk import DojoUser, PwnCollegeClient, PwnCollegeSyncClient, UserPool
+from ..ssh_session import PersistentSSHSession
+from ..tool_utils import (
     format_tool_result,
     function_to_tool_schema,
     parse_tool_calls,
 )
-from tools import AGENT_TOOLS, bash, edit_file, read_file, submit_flag, write_file
-
-from atroposlib.envs.eval import EvalBase
-from atroposlib.envs.server_handling.server_baseline import APIServerConfig
-from atroposlib.envs.server_handling.server_manager import ServerManager
+from ..tools import AGENT_TOOLS, bash, edit_file, read_file, submit_flag, write_file
 
 # Difficulty tiers by dojo
 DOJO_DIFFICULTY = {
@@ -540,7 +540,7 @@ class PwnCollegeEval(EvalBase):
 
                 # Generate HTML viewer
                 try:
-                    from rollout_viewer import generate_html
+                    from ..rollout_viewer import generate_html
 
                     generate_html(str(samples_file))
                     print(f"Generated HTML viewer: {eval_path / 'samples.html'}")
